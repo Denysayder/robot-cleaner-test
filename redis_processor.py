@@ -43,11 +43,14 @@ def getch() -> str:
 # ----------------------------------------------------------------------
 # Redis utilities
 # ----------------------------------------------------------------------
-def connect_redis(host: str, port: int, password: str) -> redis.Redis:
-    """
-    Create a Redis connection.
-    """
-    return redis.Redis(host=host, port=port, db=0, password=password)
+def connect_redis(host, port, password):
+    return redis.Redis(
+        host=host,
+        port=port,
+        password=password,
+        ssl=True,                 # TLS‑канал
+        health_check_interval=30, # <‑‑ чтобы соединение не рвалось по idle
+    )
 
 
 def send_signal(r: redis.Redis, key: str, value: str) -> None:
