@@ -47,7 +47,7 @@ def connect_redis(host: str, port: int, password: str) -> redis.Redis:
     """
     Create a Redis connection.
     """
-    return redis.Redis(host=host, port=port, db=0, password=password)
+    return redis.Redis(host=host, port=port, db=0, password=password, ssl=True)
 
 
 def send_signal(r: redis.Redis, key: str, value: str) -> None:

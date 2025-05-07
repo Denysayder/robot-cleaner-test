@@ -16,9 +16,22 @@ import csv
 import time
 from pathlib import Path
 from typing import Generator, List, Tuple
-
+import argparse, sys
 import cv2 as cv
 import numpy as np
+
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--source",
+    default="0",               # «0» — веб‑камера за замовчанням
+    help="Індекс камери або шлях до відеофайлу",
+)
+ARGS = parser.parse_args()
+try:
+    SOURCE = int(ARGS.source)  # перетворюємо на int, якщо передали «0», «1»…
+except ValueError:
+    SOURCE = ARGS.source       # інакше це шлях до файлу
+# ---------------------------------------------------------------------------
 
 # --------------------------------------------------------------------------- #
 # Опциональный импорт picamera (RPi). Если модуля нет – используем cv2.VideoCapture
@@ -78,44 +91,70 @@ from bayes_class_decision import predict_group, get_parameters
 
 
 # --------------------------------------------------------------------------- #
-# Service: универсальный генератор кадров
+# Service: універсальний генератор кадрів (відео або камера)
 # --------------------------------------------------------------------------- #
-def _frame_stream(resolution: Tuple[int, int],
-                  framerate: int) -> Generator[np.ndarray, None, None]:
+def _frame_stream(
+        resolution: Tuple[int, int],
+        framerate: int,
+        source=SOURCE,
+        loop: bool = True,
+) -> Generator[np.ndarray, None, None]:
     """
-    Возвращает бесконечный генератор кадров.
-    Если есть picamera — используется она; иначе — cv2.VideoCapture(0).
-
-    :param resolution: (width, height) кадров
-    :param framerate:  требуемый FPS
+    Нескінченний потік кадрів.
+    • Якщо є picamera – працюємо з нею.
+    • Якщо `source` — int → cv2.VideoCapture(index).
+    • Якщо `source` — рядок → читаємо відеофайл як «живу» камеру.
+    Після закінчення файлу (і loop=True) починаємо знову.
     """
     width, height = resolution
 
-    if _HAS_PICAMERA:
+    # --- 1. Raspberry Pi camera -------------------------------------------
+    if _HAS_PICAMERA and isinstance(source, int) and source == 0:
         with picamera.PiCamera() as camera:          # type: ignore[attr-defined]
             camera.resolution = resolution
             camera.framerate = framerate
-            # Буфер для raw‑захвата
             stream = np.empty((height * width * 3), dtype=np.uint8)
-
             while True:
-                camera.capture(stream, 'bgr')
+                camera.capture(stream, "bgr")
                 yield stream.reshape((height, width, 3))
+    # --- 2. Веб‑камера або відеофайл ---------------------------------------
     else:
-        cap = cv.VideoCapture(0, cv.CAP_AVFOUNDATION)  # AVFoundation – для macOS; на других ОС можно опустить
-        cap.set(cv.CAP_PROP_FRAME_WIDTH,  width)
-        cap.set(cv.CAP_PROP_FRAME_HEIGHT, height)
-        cap.set(cv.CAP_PROP_FPS,         framerate)
+        cap = cv.VideoCapture(source, cv.CAP_AVFOUNDATION) \
+              if isinstance(source, int) \
+              else cv.VideoCapture(str(source))
 
         if not cap.isOpened():
-            raise RuntimeError("Не удалось открыть веб‑камеру (index 0)")
+            raise RuntimeError(f"Не вдалося відкрити джерело {source}")
+
+        # Встановлюємо потрібну геометрію для веб‑камери
+        if isinstance(source, int):
+            cap.set(cv.CAP_PROP_FRAME_WIDTH,  width)
+            cap.set(cv.CAP_PROP_FRAME_HEIGHT, height)
+            cap.set(cv.CAP_PROP_FPS,          framerate)
+
+        frame_period = 1.0 / framerate
+        last_time = time.time()
 
         while True:
             ok, frame = cap.read()
-            if ok:
-                yield frame
-            else:
-                time.sleep(0.01)  # небольшая пауза при ошибке чтения
+            if not ok:                     # кінець відео → перемотка
+                if isinstance(source, str) and loop:
+                    cap.set(cv.CAP_PROP_POS_FRAMES, 0)
+                    continue
+                break
+
+            # Для відеофайлу даємо «живий» FPS
+            now = time.time()
+            sleep = frame_period - (now - last_time)
+            if sleep > 0:
+                time.sleep(sleep)
+            last_time = time.time()
+
+            # Масштабуємо, щоб відповідало очікуваному розміру
+            if frame.shape[1] != width or frame.shape[0] != height:
+                frame = cv.resize(frame, resolution, interpolation=cv.INTER_AREA)
+            yield frame
+
 
 
 # --------------------------------------------------------------------------- #
